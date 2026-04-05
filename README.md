@@ -110,6 +110,39 @@ Data Layer
 
     Traitement des données
 
+🔌 Source des données (NationGlory Bedrock)
+
+NationGlory ne fournit pas d'accès aux logs serveur ni d'API. La seule source exploitable est donc le **log client** des joueurs (Java ou Bedrock).
+
+WarControl utilisera un **collector local** installé chez les membres :
+
+    il lit `latest.log` en temps réel (client Java/Bedrock)
+
+    il détecte des patterns (combat, mort, join/leave, chat)
+
+    il envoie les événements vers l'API centrale
+
+⚠️ Limites connues
+
+    La visibilité est **partielle** : on voit ce que les membres connectés voient.
+
+    Sans machine 24/7, le dashboard n'est pas 100% temps réel.
+
+    Les événements peuvent être incomplets si personne n'est en jeu.
+
+✅ Mitigation possible
+
+    Plusieurs membres lancent le collector (couverture partagée)
+
+    Un VPS léger peut héberger un “observer” en continu
+
+    Mise en cache locale si l'API est indisponible
+
+🔐 Accès
+
+Par défaut, l'accès est **ouvert** pour tous ceux qui téléchargent l'outil.
+Il est possible d'ajouter une authentification plus tard (Discord ou autre) si nécessaire.
+
 🤖 Système d'agents (IA)
 
 WarControl utilise une approche multi-agents pour structurer le développement :
