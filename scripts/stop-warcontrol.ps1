@@ -3,7 +3,9 @@ $pidFiles = @(
     (Join-Path $stateDir "api.pid"),
     (Join-Path $stateDir "web.pid"),
     (Join-Path $stateDir "collector.pid"),
-    (Join-Path $stateDir "proxy.pid")
+    (Join-Path $stateDir "proxy.pid"),
+    (Join-Path $stateDir "bedrock-watch.pid"),
+    (Join-Path $stateDir "windivert.pid")
 )
 
 foreach ($pidFile in $pidFiles) {

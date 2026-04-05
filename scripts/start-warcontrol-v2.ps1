@@ -18,6 +18,8 @@ $apiVenvPython = Join-Path $root "api\.venv\Scripts\python.exe"
 $npmCmd = "C:\Program Files\nodejs\npm.cmd"
 $stopScript = Join-Path $root "scripts\stop-warcontrol.ps1"
 $proxyScript = Join-Path $root "proxy\proxy.py"
+$watchScript = Join-Path $root "scripts\watch-bedrock-udp.ps1"
+$windivertScript = Join-Path $root "scripts\start-windivert-observer.ps1"
 $stateDir = Join-Path $env:APPDATA "WarControl"
 $dbPath = Join-Path $stateDir "warcontrol.db"
 $logDir = Join-Path $root "runtime-logs"
@@ -26,6 +28,8 @@ $apiPidPath = Join-Path $stateDir "api.pid"
 $webPidPath = Join-Path $stateDir "web.pid"
 $collectorPidPath = Join-Path $stateDir "collector.pid"
 $proxyPidPath = Join-Path $stateDir "proxy.pid"
+$bedrockWatchPidPath = Join-Path $stateDir "bedrock-watch.pid"
+$windivertPidPath = Join-Path $stateDir "windivert.pid"
 $dashboardUrl = "http://127.0.0.1:3000"
 $apiUrl = "http://127.0.0.1:8000"
 $proxyBindHost = "0.0.0.0"
@@ -33,6 +37,7 @@ $proxyClientHost = "127.0.0.1"
 $proxyListenPort = 19132
 $proxyTargetHost = "bedrock.nationsglory.fr"
 $proxyTargetPort = 19132
+$networkInterceptMode = "external_server"
 $bedrockServerName = "NationGlory"
 $bedrockServerDisplayName = "NationGlory"
 $bedrockServerIcon = "1775246171"
@@ -90,6 +95,9 @@ if ($config) {
     }
     if ($config.proxyTargetPort) {
         $proxyTargetPort = [int]$config.proxyTargetPort
+    }
+    if ($config.networkInterceptMode) {
+        $networkInterceptMode = [string]$config.networkInterceptMode
     }
 }
 
@@ -188,7 +196,7 @@ function Update-BedrockServerEntry {
             if (-not $icon) {
                 $icon = $DefaultIcon
             }
-            $targetLine = "${prefix}${Name}:${ProxyHost}:${Port}:${icon}"
+            $targetLine = "${prefix}${Name} :${ProxyHost}:${Port}:${icon}"
             $lines += $targetLine
             $updated = $true
         } else {
@@ -198,12 +206,13 @@ function Update-BedrockServerEntry {
 
     if (-not $updated) {
         if (-not $targetLine) {
-            $targetLine = "${Name}:${ProxyHost}:${Port}:${DefaultIcon}:1"
+            $targetLine = "${Name} :${ProxyHost}:${Port}:${DefaultIcon}"
         }
         $lines += $targetLine
     }
 
-    Set-Content -LiteralPath $FilePath -Value $lines -Encoding UTF8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($FilePath, $lines, $utf8NoBom)
 }
 
 if ($Mode -eq "demo") {
@@ -263,7 +272,7 @@ if ($Mode -eq "live" -and -not (Test-Path $expectedLog)) {
     Write-Host ""
 }
 
-if ($Mode -eq "live" -and $Edition -ne "java") {
+if ($Mode -eq "live" -and $Edition -ne "java" -and $networkInterceptMode -eq "external_server") {
     $bedrockFiles = Get-BedrockExternalServerFiles
     if ($bedrockFiles.Count -gt 0) {
         foreach ($file in $bedrockFiles) {
@@ -304,10 +313,32 @@ if ($Mode -eq "live" -and $Edition -ne "java") {
     if (Test-Path $collectorPidPath) {
         Remove-Item -LiteralPath $collectorPidPath -Force -ErrorAction SilentlyContinue
     }
+    $watchProcess = Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
+        -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $watchScript `
+        -PassThru `
+        -RedirectStandardOutput (Join-Path $logDir "bedrock-watch.out.log") `
+        -RedirectStandardError (Join-Path $logDir "bedrock-watch.err.log")
+    Set-Content -LiteralPath $bedrockWatchPidPath -Value $watchProcess.Id -NoNewline
+    if ($networkInterceptMode -eq "windivert_observe" -and (Test-Path $windivertScript)) {
+        $windivertProcess = Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
+            -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $windivertScript `
+            -PassThru `
+            -RedirectStandardOutput (Join-Path $logDir "windivert-launch.out.log") `
+            -RedirectStandardError (Join-Path $logDir "windivert-launch.err.log")
+        Set-Content -LiteralPath $windivertPidPath -Value $windivertProcess.Id -NoNewline
+    } elseif (Test-Path $windivertPidPath) {
+        Remove-Item -LiteralPath $windivertPidPath -Force -ErrorAction SilentlyContinue
+    }
 } else {
     Set-Content -LiteralPath $collectorPidPath -Value $workerProcess.Id -NoNewline
     if (Test-Path $proxyPidPath) {
         Remove-Item -LiteralPath $proxyPidPath -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $bedrockWatchPidPath) {
+        Remove-Item -LiteralPath $bedrockWatchPidPath -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $windivertPidPath) {
+        Remove-Item -LiteralPath $windivertPidPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -322,6 +353,7 @@ Write-Host "API: $apiUrl/health"
 Write-Host "Dashboard: $dashboardUrl"
 if ($Mode -eq "live" -and $Edition -ne "java") {
     Write-Host "Bedrock Proxy: bind $proxyBindHost`:$proxyListenPort | client $proxyClientHost`:$proxyListenPort -> $proxyTargetHost`:$proxyTargetPort"
+    Write-Host "Intercept mode: $networkInterceptMode"
 }
 Write-Host "Logs: $logDir"
 Write-Host "Config: $configPath"
