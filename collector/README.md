@@ -5,20 +5,36 @@ Collects Minecraft client log events and sends them to the WarControl API.
 ## Usage
 
 ```bash
-python3 agent.py --edition bedrock --api-url http://127.0.0.1:8000 --api-key YOUR_KEY --server NationGlory --source PlayerName
+python agent.py --edition auto --api-url http://127.0.0.1:8000 --api-key YOUR_KEY --server NationGlory --source PlayerName
 ```
+
+## Windows 11
+
+On Windows 11, `--edition auto` checks Java and Bedrock log locations before falling back.
+
+Common log paths:
+
+- Java launcher: `%USERPROFILE%\.minecraft\logs\latest.log`
+- Bedrock roaming install: `%APPDATA%\Minecraft Bedrock\logs\latest.log`
+- Bedrock UWP install: `%LOCALAPPDATA%\Packages\Microsoft.MinecraftUWP_8wekyb3d8bbwe\LocalState\logs\latest.log`
 
 If auto-detection misses, force the path:
 
-```bash
-python3 agent.py --edition bedrock --log-path "C:\\Users\\<username>\\AppData\\Roaming\\Minecraft Bedrock\\logs\\latest.log"
+```powershell
+python agent.py --edition java --log-path "$env:USERPROFILE\.minecraft\logs\latest.log"
 ```
+
+```powershell
+python agent.py --edition bedrock --log-path "$env:APPDATA\Minecraft Bedrock\logs\latest.log"
+```
+
+Offline events are buffered on Windows in `%APPDATA%\WarControl\outbox.jsonl`.
 
 ## Notes
 
 - `--edition` can be `auto`, `java`, or `bedrock`.
 - `--send-all` will forward every log line as `type=log`.
-- If the API is offline, events are buffered in `~/.warcontrol/outbox.jsonl` and retried on next send.
+- If the API is offline, events are buffered locally and retried on next send.
 - You can set environment variables instead of flags:
   - `WARCONTROL_API_URL`
   - `WARCONTROL_API_KEY`
@@ -31,7 +47,3 @@ python3 agent.py --edition bedrock --log-path "C:\\Users\\<username>\\AppData\\R
 
 Default path for the official launcher:
 - Linux Java: `/home/<username>/.minecraft/logs/latest.log`
-
-Windows Bedrock paths (depends on the Minecraft build):
-- `%APPDATA%\\Minecraft Bedrock\\logs\\latest.log`
-- `%LOCALAPPDATA%\\Packages\\Microsoft.MinecraftUWP_8wekyb3d8bbwe\\LocalState\\logs\\latest.log`

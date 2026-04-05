@@ -7,11 +7,16 @@ data/
 *.db
 .env
 .env.local
+warcontrol.config.json
 runtime-logs/
 api-server.log
 api-server.err.log
 web-server.log
 web-server.err.log
+collector-server.log
+collector-server.err.log
+null
+.pytest_cache/
 
 # Agent context files — local only
 CLAUDE.md

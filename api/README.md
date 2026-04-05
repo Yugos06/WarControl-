@@ -9,6 +9,16 @@ pip install -r requirements.txt
 WARCONTROL_INGEST_KEY=change-me uvicorn api.main:app --reload
 ```
 
+## Run (Windows PowerShell)
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:WARCONTROL_INGEST_KEY="change-me"
+uvicorn api.main:app --reload
+```
+
 ## Env
 
 - `WARCONTROL_DB_PATH` (default: `data/warcontrol.db`)
