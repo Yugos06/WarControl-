@@ -16,12 +16,26 @@ $configPath = Join-Path $root "warcontrol.config.json"
 $exampleConfigPath = Join-Path $root "warcontrol.config.json.example"
 $apiVenvPython = Join-Path $root "api\.venv\Scripts\python.exe"
 $npmCmd = "C:\Program Files\nodejs\npm.cmd"
+$stopScript = Join-Path $root "scripts\stop-warcontrol.ps1"
+$proxyScript = Join-Path $root "proxy\proxy.py"
 $stateDir = Join-Path $env:APPDATA "WarControl"
 $dbPath = Join-Path $stateDir "warcontrol.db"
 $logDir = Join-Path $root "runtime-logs"
 $keyPath = Join-Path $stateDir "launcher.key"
+$apiPidPath = Join-Path $stateDir "api.pid"
+$webPidPath = Join-Path $stateDir "web.pid"
+$collectorPidPath = Join-Path $stateDir "collector.pid"
+$proxyPidPath = Join-Path $stateDir "proxy.pid"
 $dashboardUrl = "http://127.0.0.1:3000"
 $apiUrl = "http://127.0.0.1:8000"
+$proxyBindHost = "0.0.0.0"
+$proxyClientHost = "127.0.0.1"
+$proxyListenPort = 19132
+$proxyTargetHost = "bedrock.nationsglory.fr"
+$proxyTargetPort = 19132
+$bedrockServerName = "NationGlory"
+$bedrockServerDisplayName = "NationGlory"
+$bedrockServerIcon = "1775246171"
 
 New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -60,10 +74,32 @@ if ($config) {
     if ($config.apiUrl) {
         $apiUrl = [string]$config.apiUrl
     }
+    if ($config.proxyBindHost) {
+        $proxyBindHost = [string]$config.proxyBindHost
+    } elseif ($config.proxyListenHost) {
+        $proxyBindHost = [string]$config.proxyListenHost
+    }
+    if ($config.proxyClientHost) {
+        $proxyClientHost = [string]$config.proxyClientHost
+    }
+    if ($config.proxyListenPort) {
+        $proxyListenPort = [int]$config.proxyListenPort
+    }
+    if ($config.proxyTargetHost) {
+        $proxyTargetHost = [string]$config.proxyTargetHost
+    }
+    if ($config.proxyTargetPort) {
+        $proxyTargetPort = [int]$config.proxyTargetPort
+    }
 }
 
 if (-not $Mode) {
     $Mode = "live"
+}
+
+if (Test-Path $stopScript) {
+    & powershell.exe -ExecutionPolicy Bypass -File $stopScript | Out-Null
+    Start-Sleep -Milliseconds 800
 }
 
 if (-not $ApiKey) {
@@ -106,6 +142,70 @@ Set-Location '$root\web'
 & '$npmCmd' run dev -- --hostname 127.0.0.1 --port 3000
 "@
 
+function Get-BedrockExternalServerFiles {
+    $paths = @()
+
+    if ($env:APPDATA) {
+        $roamingRoot = Join-Path $env:APPDATA "Minecraft Bedrock\Users"
+        if (Test-Path $roamingRoot) {
+            $paths += Get-ChildItem -LiteralPath $roamingRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                Join-Path $_.FullName "games\com.mojang\minecraftpe\external_servers.txt"
+            }
+        }
+    }
+
+    if ($env:LOCALAPPDATA) {
+        $uwpPath = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.MinecraftUWP_8wekyb3d8bbwe\LocalState\games\com.mojang\minecraftpe\external_servers.txt"
+        $paths += $uwpPath
+    }
+
+    $paths | Where-Object { Test-Path $_ } | Select-Object -Unique
+}
+
+function Update-BedrockServerEntry {
+    param(
+        [string]$FilePath,
+        [string]$Name,
+        [string]$ProxyHost,
+        [int]$Port,
+        [string]$DefaultIcon
+    )
+
+    $backupPath = "$FilePath.warcontrol.bak"
+    if (-not (Test-Path $backupPath)) {
+        Copy-Item -LiteralPath $FilePath -Destination $backupPath -Force
+    }
+
+    $targetLine = $null
+    $updated = $false
+    $lines = @()
+    $escapedName = [regex]::Escape($Name)
+
+    foreach ($line in (Get-Content -LiteralPath $FilePath -ErrorAction SilentlyContinue)) {
+        if ($line -match "^\s*(?<prefix>\d+:)?\s*$escapedName\s*:(?<host>[^:]*):(?<port>\d+):(?<icon>.*)$") {
+            $icon = $Matches["icon"]
+            $prefix = $Matches["prefix"]
+            if (-not $icon) {
+                $icon = $DefaultIcon
+            }
+            $targetLine = "${prefix}${Name}:${ProxyHost}:${Port}:${icon}"
+            $lines += $targetLine
+            $updated = $true
+        } else {
+            $lines += $line
+        }
+    }
+
+    if (-not $updated) {
+        if (-not $targetLine) {
+            $targetLine = "${Name}:${ProxyHost}:${Port}:${DefaultIcon}:1"
+        }
+        $lines += $targetLine
+    }
+
+    Set-Content -LiteralPath $FilePath -Value $lines -Encoding UTF8
+}
+
 if ($Mode -eq "demo") {
     $collectorArgs = @(
         "collector\agent.py",
@@ -135,6 +235,10 @@ $collectorArgString = (($collectorArgs | ForEach-Object {
 }) -join " ")
 
 $collectorCommand = "Set-Location '$root'; & '$apiVenvPython' $collectorArgString"
+$proxyCommand = @"
+Set-Location '$root'
+& '$apiVenvPython' -u '$proxyScript' --listen-host '$proxyBindHost' --listen-port $proxyListenPort --target-host '$proxyTargetHost' --target-port $proxyTargetPort --api-url '$apiUrl' --api-key '$ApiKey' --server '$Server' --source '$Source'
+"@
 
 $logCandidates = @(
     "$env:APPDATA\.minecraft\logs\latest.log",
@@ -154,29 +258,58 @@ if ($LogPath) {
 if ($Mode -eq "live" -and -not (Test-Path $expectedLog)) {
     Write-Host ""
     Write-Host "  [!] Log Minecraft absent : $expectedLog" -ForegroundColor Yellow
-    Write-Host "      Rejoins NationsGlory en jeu - le collector demarrera automatiquement." -ForegroundColor Yellow
+    Write-Host "      Rejoins NationsGlory en jeu - WarControl basculera sur le bon moteur automatiquement." -ForegroundColor Yellow
     Write-Host "      (Mode demo disponible : modifie warcontrol.config.json ou lance --Mode demo)" -ForegroundColor DarkYellow
     Write-Host ""
 }
 
-Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
+if ($Mode -eq "live" -and $Edition -ne "java") {
+    $bedrockFiles = Get-BedrockExternalServerFiles
+    if ($bedrockFiles.Count -gt 0) {
+        foreach ($file in $bedrockFiles) {
+            Update-BedrockServerEntry -FilePath $file -Name $bedrockServerName -ProxyHost $proxyClientHost -Port $proxyListenPort -DefaultIcon $bedrockServerIcon
+            Write-Host "Bedrock server entry updated: $file -> $proxyClientHost`:$proxyListenPort"
+        }
+    } else {
+        Write-Host "Aucun external_servers.txt Bedrock detecte. Le proxy sera lance, mais l'entree serveur devra etre ajoutee manuellement." -ForegroundColor Yellow
+    }
+}
+
+$apiProcess = Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
     -ArgumentList "-NoProfile", "-Command", $apiCommand `
+    -PassThru `
     -RedirectStandardOutput (Join-Path $logDir "api.log") `
     -RedirectStandardError (Join-Path $logDir "api.err.log")
+Set-Content -LiteralPath $apiPidPath -Value $apiProcess.Id -NoNewline
 
 Start-Sleep -Seconds 2
 
-Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
+$webProcess = Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
     -ArgumentList "-NoProfile", "-Command", $webCommand `
+    -PassThru `
     -RedirectStandardOutput (Join-Path $logDir "web.log") `
     -RedirectStandardError (Join-Path $logDir "web.err.log")
+Set-Content -LiteralPath $webPidPath -Value $webProcess.Id -NoNewline
 
 Start-Sleep -Seconds 2
 
-Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
-    -ArgumentList "-NoProfile", "-Command", $collectorCommand `
-    -RedirectStandardOutput (Join-Path $logDir "collector.log") `
-    -RedirectStandardError (Join-Path $logDir "collector.err.log")
+$workerProcess = Start-Process -WindowStyle Minimized -FilePath "powershell.exe" `
+    -ArgumentList "-NoProfile", "-Command", ($(if ($Mode -eq "live" -and $Edition -ne "java") { $proxyCommand } else { $collectorCommand })) `
+    -PassThru `
+    -RedirectStandardOutput (Join-Path $logDir $(if ($Mode -eq "live" -and $Edition -ne "java") { "proxy.log" } else { "collector.log" })) `
+    -RedirectStandardError (Join-Path $logDir $(if ($Mode -eq "live" -and $Edition -ne "java") { "proxy.err.log" } else { "collector.err.log" }))
+
+if ($Mode -eq "live" -and $Edition -ne "java") {
+    Set-Content -LiteralPath $proxyPidPath -Value $workerProcess.Id -NoNewline
+    if (Test-Path $collectorPidPath) {
+        Remove-Item -LiteralPath $collectorPidPath -Force -ErrorAction SilentlyContinue
+    }
+} else {
+    Set-Content -LiteralPath $collectorPidPath -Value $workerProcess.Id -NoNewline
+    if (Test-Path $proxyPidPath) {
+        Remove-Item -LiteralPath $proxyPidPath -Force -ErrorAction SilentlyContinue
+    }
+}
 
 if ($OpenBrowser) {
     Start-Sleep -Seconds 2
@@ -187,5 +320,8 @@ Write-Host "WarControl lance."
 Write-Host "Mode: $Mode"
 Write-Host "API: $apiUrl/health"
 Write-Host "Dashboard: $dashboardUrl"
+if ($Mode -eq "live" -and $Edition -ne "java") {
+    Write-Host "Bedrock Proxy: bind $proxyBindHost`:$proxyListenPort | client $proxyClientHost`:$proxyListenPort -> $proxyTargetHost`:$proxyTargetPort"
+}
 Write-Host "Logs: $logDir"
 Write-Host "Config: $configPath"

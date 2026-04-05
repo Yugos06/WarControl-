@@ -1,0 +1,1 @@
+"""WarControl Bedrock proxy package."""

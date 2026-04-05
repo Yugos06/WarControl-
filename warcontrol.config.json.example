@@ -8,5 +8,10 @@
   "dashboardUrl": "http://127.0.0.1:3000",
   "apiUrl": "http://127.0.0.1:8000",
   "minecraftLauncherPath": "",
+  "proxyBindHost": "0.0.0.0",
+  "proxyClientHost": "127.0.0.1",
+  "proxyListenPort": 19132,
+  "proxyTargetHost": "bedrock.nationsglory.fr",
+  "proxyTargetPort": 19132,
   "notes": "Copie ce fichier en warcontrol.config.json puis adapte seulement les valeurs utiles."
 }

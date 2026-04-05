@@ -7,6 +7,7 @@ import sys
 import threading
 import tkinter as tk
 import webbrowser
+import winreg
 from pathlib import Path
 from tkinter import messagebox
 from urllib.error import URLError
@@ -17,6 +18,7 @@ CONFIG_PATH = ROOT / "warcontrol.config.json"
 EXAMPLE_CONFIG_PATH = ROOT / "warcontrol.config.json.example"
 START_SCRIPT = ROOT / "scripts" / "start-warcontrol-v2.ps1"
 STOP_SCRIPT = ROOT / "scripts" / "stop-warcontrol.ps1"
+CLEAR_SCRIPT = ROOT / "scripts" / "clear-warcontrol-data.ps1"
 
 COLORS = {
     "bg_base": "#060a0f",
@@ -47,6 +49,11 @@ DEFAULT_CONFIG = {
     "dashboardUrl": "http://127.0.0.1:3000",
     "apiUrl": "http://127.0.0.1:8000",
     "minecraftLauncherPath": "",
+    "proxyBindHost": "0.0.0.0",
+    "proxyClientHost": "127.0.0.1",
+    "proxyListenPort": 19132,
+    "proxyTargetHost": "bedrock.nationsglory.fr",
+    "proxyTargetPort": 19132,
 }
 
 
@@ -112,6 +119,16 @@ def _minecraft_path_candidates(config_path: str) -> list[str]:
 def _detect_minecraft_launcher_path(config_path: str) -> str:
     candidates = _minecraft_path_candidates(config_path)
     return candidates[0] if candidates else ""
+
+
+def _has_minecraft_protocol() -> bool:
+    for key_name in ("minecraft", r"Applications\MinecraftLauncher.exe"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, key_name):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _detect_log_path(config_path: str) -> str:
@@ -362,6 +379,7 @@ class LauncherApp:
         self._add_button(button_bar, "Detect Automatically", self.detect_automatically)
         self._add_button(button_bar, "Start All", self.start_warcontrol)
         self._add_button(button_bar, "Stop WarControl", self.stop_warcontrol)
+        self._add_button(button_bar, "Clear Local Data", self.clear_local_data)
         self._add_button(button_bar, "Open Dashboard", self.open_dashboard)
         self._add_button(button_bar, "Launch Minecraft", self.launch_minecraft)
 
@@ -388,7 +406,7 @@ class LauncherApp:
 
         tip = tk.Label(
             right_panel,
-            text="Flow recommande\n\n1. Save Config\n2. Start WarControl\n3. Launch Minecraft\n4. Rejoindre NationGlory\n5. Observer le dashboard",
+            text="Flow recommande\n\n1. Save Config\n2. Start All\n3. Launch Minecraft\n4. Rejoindre NationGlory\n5. Observer le dashboard",
             justify="left",
             fg=COLORS["text_primary"],
             bg=COLORS["bg_panel_alt"],
@@ -412,11 +430,12 @@ class LauncherApp:
             "1.0",
             "Flow client recommande :\n"
             "1. Verifie ou ajuste la configuration.\n"
-            "2. Clique sur 'Start WarControl'.\n"
-            "3. Clique sur 'Launch Minecraft'.\n"
-            "4. Rejoins NationGlory.\n"
+            "2. Clique sur 'Start All'.\n"
+            "3. WarControl lance le proxy Bedrock en fond.\n"
+            "4. Lance Minecraft puis rejoins NationGlory.\n"
             "5. Le dashboard se met a jour automatiquement.\n\n"
-            "Mode demo sert a presenter le produit sans dependre des logs Minecraft.\n"
+            "Mode demo sert a presenter le produit sans dependre de Bedrock.\n"
+            "En mode live, l'entree NationGlory Bedrock est redirigee vers le proxy local.\n"
             "Le champ 'Minecraft Path' est optionnel et permet de forcer un launcher custom.\n",
         )
         help_box.configure(state="disabled")
@@ -468,6 +487,11 @@ class LauncherApp:
             "dashboardUrl": str(self.config.get("dashboardUrl", "http://127.0.0.1:3000")),
             "apiUrl": str(self.config.get("apiUrl", "http://127.0.0.1:8000")),
             "minecraftLauncherPath": self.minecraft_path_var.get().strip(),
+            "proxyBindHost": str(self.config.get("proxyBindHost", self.config.get("proxyListenHost", "0.0.0.0"))),
+            "proxyClientHost": str(self.config.get("proxyClientHost", "127.0.0.1")),
+            "proxyListenPort": int(self.config.get("proxyListenPort", 19132)),
+            "proxyTargetHost": str(self.config.get("proxyTargetHost", "bedrock.nationsglory.fr")),
+            "proxyTargetPort": int(self.config.get("proxyTargetPort", 19132)),
         }
 
     def save_config(self) -> None:
@@ -496,6 +520,7 @@ class LauncherApp:
 
     def start_warcontrol(self) -> None:
         self.save_config()
+        live_bedrock = self.mode_var.get() == "live" and str(self.config.get("edition", "auto")) != "java"
         args = [
             "-Mode",
             str(self.config["mode"]),
@@ -510,9 +535,10 @@ class LauncherApp:
             args.extend(["-Source", str(self.config["source"])])
         subprocess.Popen(_powershell_command(START_SCRIPT, *args), cwd=ROOT)
         launch_ok, launch_message = _launch_minecraft(str(self.config.get("minecraftLauncherPath", "")))
-        self.status_var.set("WarControl starting... " + launch_message)
+        boot_target = "Bedrock proxy" if live_bedrock else "collector"
+        self.status_var.set(f"WarControl starting ({boot_target})... " + launch_message)
         if not launch_ok:
-            self.status_var.set("WarControl starting... Minecraft launcher not found.")
+            self.status_var.set(f"WarControl starting ({boot_target})... Minecraft launcher not found.")
         self._refresh_minecraft_detection()
         self.root.after(2500, self._refresh_status)
 
@@ -523,6 +549,17 @@ class LauncherApp:
 
     def open_dashboard(self) -> None:
         webbrowser.open(str(self.config.get("dashboardUrl", "http://127.0.0.1:3000")))
+
+    def clear_local_data(self) -> None:
+        should_clear = messagebox.askyesno(
+            "WarControl",
+            "This will stop WarControl and delete local data, cached events, and runtime logs. Continue?",
+        )
+        if not should_clear:
+            return
+        subprocess.Popen(_powershell_command(CLEAR_SCRIPT), cwd=ROOT)
+        self.status_var.set("Clearing local data...")
+        self.root.after(1800, self._refresh_status)
 
     def launch_minecraft(self) -> None:
         self.save_config()
@@ -537,6 +574,9 @@ class LauncherApp:
         if detected_path:
             self.minecraft_var.set("Minecraft: detected")
             self.minecraft_hint_var.set(f"Launcher status: detected - {detected_path}")
+        elif _has_minecraft_protocol():
+            self.minecraft_var.set("Minecraft: detected")
+            self.minecraft_hint_var.set("Launcher status: detected via Windows protocol handler.")
         else:
             self.minecraft_var.set("Minecraft: not detected")
             self.minecraft_hint_var.set("Launcher status: not detected - use Detect Automatically or set a path.")
@@ -551,7 +591,8 @@ class LauncherApp:
         self.root.after(5000, self._refresh_status)
 
     def _apply_status(self, api_ok: bool, web_ok: bool) -> None:
-        collector_text = "Collector: live" if api_ok else "Collector: standby"
+        live_bedrock = self.mode_var.get() == "live" and str(self.config.get("edition", "auto")) != "java"
+        collector_text = ("Proxy: live" if api_ok else "Proxy: standby") if live_bedrock else ("Collector: live" if api_ok else "Collector: standby")
         self.collect_var.set(collector_text)
         self.api_var.set(f"API: {'online' if api_ok else 'offline'}")
         self.web_var.set(f"Dashboard: {'online' if web_ok else 'offline'}")
