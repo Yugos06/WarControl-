@@ -44,6 +44,8 @@ DEFAULT_TARGET_HOST = "bedrock.nationsglory.fr"
 DEFAULT_TARGET_PORT = 19132
 DEFAULT_LISTEN_HOST = "127.0.0.1"
 DEFAULT_LISTEN_PORT = 19132
+# Port sur lequel le proxy écoute les copies envoyées par WinDivert (mode tap)
+TAP_LISTEN_PORT = 19133
 
 TEXT_PATTERNS = [
     ("kill", re.compile(r"^(?P<killer>.+?) a tue (?P<victim>.+)$", re.IGNORECASE)),
@@ -136,6 +138,15 @@ def _flush_events(api_url: str, api_key: str | None, spool_path: Path, events: l
 
 
 def _normalize_text(raw: str) -> str:
+    # Correction mojibake : chaîne UTF-8 mal décodée en latin-1 (ex: Ã© → é)
+    # On tente un ré-encodage latin-1 → décodage UTF-8
+    try:
+        fixed = raw.encode("latin-1").decode("utf-8")
+        if fixed != raw:
+            raw = fixed
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+
     value = raw.replace("\x00", " ").replace("\n", " ").replace("\r", " ").strip()
     value = re.sub(r"\s+", " ", value)
     replacements = {
@@ -591,6 +602,34 @@ class BedrockProxy:
                 self.sock.sendto(forward if forward is not None else payload, self.target_addr)
                 self._dispatch(payload, "client")
 
+    def serve_tap(self, tap_host: str = "127.0.0.1", tap_port: int = TAP_LISTEN_PORT) -> None:
+        """
+        Ecoute les copies de paquets envoyees par WinDivert mode tap.
+        Format : [4B ip_src as uint32 big-endian][2B port_src][payload UDP brut]
+        Lance dans un thread separe en parallele de serve_forever.
+        """
+        import struct as _struct
+        tap_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        tap_sock.bind((tap_host, tap_port))
+        tap_sock.settimeout(1.0)
+        print(f"[proxy] tap listener on {tap_host}:{tap_port}", flush=True)
+        while self._running:
+            try:
+                data, _ = tap_sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(data) < 6:
+                continue
+            src_ip_int, src_port = _struct.unpack_from("!IH", data, 0)
+            payload = data[6:]
+            src_ip = socket.inet_ntoa(_struct.pack("!I", src_ip_int))
+            direction = "server" if src_ip != "127.0.0.1" else "client"
+            self._dispatch(payload, direction)
+        tap_sock.close()
+
+
     def _dispatch(self, payload: bytes, direction: str) -> None:
         mitm = self._mitm
         if mitm is not None and mitm.state == MITMKeyExchange.STATE_ENCRYPTED:
@@ -617,7 +656,7 @@ class BedrockProxy:
         if mitm.state == MITMKeyExchange.STATE_ENCRYPTED:
             return None
 
-        frag_peek: dict[int, dict[int, bytes]] = {}
+        frag_peek = self._frag_buf.setdefault("_rewrite", {})
         encap_list = raknet_extract_payloads(payload, frag_peek)
         for encap in encap_list:
             packets = mcpe_decode_batch(encap)
@@ -833,6 +872,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", default=os.getenv("WARCONTROL_SERVER", "NationGlory"))
     parser.add_argument("--source", default=os.getenv("WARCONTROL_SOURCE", os.getenv("USERNAME", "bedrock-proxy")))
     parser.add_argument("--spool-dir", default=os.getenv("WARCONTROL_SPOOL_DIR", _default_spool_dir()))
+    parser.add_argument(
+        "--tap-port",
+        type=int,
+        default=int(os.getenv("WARCONTROL_TAP_PORT", str(TAP_LISTEN_PORT))),
+        help="Port local sur lequel ecouter les copies WinDivert (mode tap). 0 = desactive.",
+    )
     return parser
 
 
@@ -850,10 +895,18 @@ def main() -> int:
         source=args.source,
         spool_path=spool_path,
     )
-    stop_event = threading.Event()
+
+    # Lancer le recepteur tap dans un thread dedie si active
+    if args.tap_port:
+        tap_thread = threading.Thread(
+            target=proxy.serve_tap,
+            kwargs={"tap_host": "127.0.0.1", "tap_port": args.tap_port},
+            daemon=True,
+            name="proxy-tap",
+        )
+        tap_thread.start()
 
     def _handle_exit(*_args: object) -> None:
-        stop_event.set()
         proxy.close()
 
     try:

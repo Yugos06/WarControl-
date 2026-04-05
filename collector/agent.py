@@ -74,12 +74,12 @@ JAVA_PATTERNS = [
 BEDROCK_PATTERNS = [
     (
         "join",
-        re.compile(r"^Player connected: (?P<player>[^,]+), xuid: (?P<xuid>\\d+)$"),
+        re.compile(r"^Player connected: (?P<player>[^,]+), xuid: (?P<xuid>\d+)$"),
     ),
     (
         "leave",
         re.compile(
-            r"^Player disconnected: (?P<player>[^,]+), xuid: (?P<xuid>\\d+)$"
+            r"^Player disconnected: (?P<player>[^,]+), xuid: (?P<xuid>\d+)$"
         ),
     ),
     ("chat", re.compile(r"^Chat: <(?P<player>[^>]+)> (?P<message>.+)$")),
