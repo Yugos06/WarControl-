@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.next/
+data/
+*.db
+.env
+.env.local
+runtime-logs/
+api-server.log
+api-server.err.log
+web-server.log
+web-server.err.log
+
+# Agent context files — local only
+CLAUDE.md
+AGENTS.md
+CODEX.md
+.superpowers/

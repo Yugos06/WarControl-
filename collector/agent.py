@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -13,7 +14,52 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 DEFAULT_API_URL = "http://127.0.0.1:8000"
-DEFAULT_SPOOL_DIR = os.path.expanduser("~/.warcontrol")
+
+
+def default_spool_dir() -> str:
+    if os.name == "nt":
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return os.path.join(appdata, "WarControl")
+    return os.path.expanduser("~/.warcontrol")
+
+
+DEFAULT_SPOOL_DIR = default_spool_dir()
+
+_DEMO_NAMES = ["Notch", "Herobrine", "Steve", "Alex", "Dinnerbone", "jeb_", "xXKillerXx", "FactionBoss"]
+_DEMO_CHATS = ["en guerre", "base nord attaquee", "spawn camp", "renforts ici", "repli", "ils arrivent"]
+
+
+def generate_demo_event() -> dict:
+    event_type = random.choices(
+        ["kill", "join", "leave", "chat"],
+        weights=[30, 25, 20, 25],
+    )[0]
+    actor = random.choice(_DEMO_NAMES)
+    target = None
+    message = ""
+
+    if event_type == "kill":
+        target = random.choice([n for n in _DEMO_NAMES if n != actor])
+        message = f"{actor} a tué {target}"
+    elif event_type == "join":
+        message = f"{actor} a rejoint la partie"
+    elif event_type == "leave":
+        message = f"{actor} a quitté la partie"
+    elif event_type == "chat":
+        msg = random.choice(_DEMO_CHATS)
+        message = f"<{actor}> {msg}"
+
+    return {
+        "ts": _now_iso(),
+        "type": event_type,
+        "message": message,
+        "actor": actor,
+        "target": target,
+        "server": "NationsGlory-DEMO",
+        "source": "demo",
+        "raw": message,
+    }
 
 JAVA_PATTERNS = [
     ("kill", re.compile(r"^(?P<victim>.+?) a été tué par (?P<killer>.+)$")),
@@ -55,6 +101,7 @@ class Settings:
     flush_seconds: float
     from_start: bool
     spool_path: str
+    demo: bool = False
 
 
 def _now_iso() -> str:
@@ -115,37 +162,58 @@ def parse_line(line: str, settings: Settings) -> dict | None:
     return None
 
 
-def default_log_path(edition: str) -> str:
-    edition = edition.lower()
-    if edition == "java":
-        return os.path.expanduser("~/.minecraft/logs/latest.log")
-    if edition == "bedrock":
-        candidates: list[tuple[str, str]] = []
-        appdata = os.getenv("APPDATA")
-        if appdata:
-            appdata_dir = os.path.join(appdata, "Minecraft Bedrock", "logs")
-            candidates.append((appdata_dir, os.path.join(appdata_dir, "latest.log")))
-        local_appdata = os.getenv("LOCALAPPDATA")
-        if local_appdata:
-            local_dir = os.path.join(
+def _java_log_candidates() -> list[str]:
+    appdata = os.getenv("APPDATA")
+    candidates: list[str] = []
+    if appdata:
+        candidates.append(os.path.join(appdata, ".minecraft", "logs", "latest.log"))
+    candidates.append(os.path.expanduser("~/.minecraft/logs/latest.log"))
+    return [os.path.normpath(path) for path in candidates]
+
+
+def _bedrock_log_candidates() -> list[str]:
+    candidates: list[str] = []
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        candidates.append(os.path.join(appdata, "Minecraft Bedrock", "logs", "latest.log"))
+    local_appdata = os.getenv("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(
+            os.path.join(
                 local_appdata,
                 "Packages",
                 "Microsoft.MinecraftUWP_8wekyb3d8bbwe",
                 "LocalState",
                 "logs",
+                "latest.log",
             )
-            candidates.append((local_dir, os.path.join(local_dir, "latest.log")))
-        for log_dir, log_path in candidates:
-            if os.path.isdir(log_dir):
-                return log_path
-        for _, log_path in candidates:
-            if os.path.exists(log_path):
-                return log_path
-        if candidates:
-            return candidates[0][1]
-        return "latest.log"
+        )
+    return [os.path.normpath(path) for path in candidates]
+
+
+def _choose_existing_path(candidates: list[str]) -> str | None:
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    for path in candidates:
+        if os.path.isdir(os.path.dirname(path)):
+            return path
+    return candidates[0] if candidates else None
+
+
+def default_log_path(edition: str) -> str:
+    edition = edition.lower()
+    if edition == "java":
+        return _choose_existing_path(_java_log_candidates()) or "latest.log"
+    if edition == "bedrock":
+        return _choose_existing_path(_bedrock_log_candidates()) or "latest.log"
+    if edition == "auto":
+        auto_candidates: list[str] = []
+        auto_candidates.extend(_java_log_candidates())
+        auto_candidates.extend(_bedrock_log_candidates())
+        return _choose_existing_path(auto_candidates) or "latest.log"
     if os.name == "nt":
-        return default_log_path("bedrock")
+        return default_log_path("auto")
     return default_log_path("java")
 
 
@@ -247,7 +315,7 @@ def build_settings(args: argparse.Namespace) -> Settings:
     return Settings(
         api_url=api_url,
         api_key=api_key,
-        log_path=os.path.expanduser(log_path),
+        log_path=os.path.normpath(os.path.expanduser(log_path)),
         server=server,
         source=source,
         edition=edition,
@@ -257,6 +325,7 @@ def build_settings(args: argparse.Namespace) -> Settings:
         flush_seconds=args.flush_seconds,
         from_start=args.from_start,
         spool_path=spool_path,
+        demo=args.demo,
     )
 
 
@@ -278,9 +347,24 @@ def main() -> int:
     parser.add_argument("--flush-seconds", type=float, default=3.0, help="Max seconds before flush")
     parser.add_argument("--from-start", action="store_true", help="Read file from start")
     parser.add_argument("--spool-dir", help="Directory for offline spool")
+    parser.add_argument("--demo", action="store_true", help="Mode demo: genere des events fictifs sans lire de fichier log")
     args = parser.parse_args()
 
     settings = build_settings(args)
+
+    if settings.demo:
+        print("[agent] mode demo — envoi d'events fictifs (Ctrl+C pour arreter)")
+        buffer: list[dict] = []
+        last_flush = time.time()
+        while True:
+            buffer.append(generate_demo_event())
+            time.sleep(random.uniform(2.0, 4.0))
+            now = time.time()
+            if buffer and (len(buffer) >= settings.batch_size or now - last_flush >= settings.flush_seconds):
+                buffer = flush_events(settings, buffer)
+                last_flush = now
+        return 0
+
     print(f"[agent] tailing {settings.log_path}")
 
     buffer: list[dict] = []
