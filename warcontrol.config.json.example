@@ -7,5 +7,6 @@
   "openBrowser": true,
   "dashboardUrl": "http://127.0.0.1:3000",
   "apiUrl": "http://127.0.0.1:8000",
+  "minecraftLauncherPath": "",
   "notes": "Copie ce fichier en warcontrol.config.json puis adapte seulement les valeurs utiles."
 }

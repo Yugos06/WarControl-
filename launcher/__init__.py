@@ -1,0 +1,1 @@
+"""WarControl desktop launcher package."""

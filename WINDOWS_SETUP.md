@@ -84,6 +84,20 @@ Configuration cliente en une fois :
 
 Le lanceur cree automatiquement une cle interne locale pour faire communiquer l'API et le collector. Le client n'a pas besoin de renseigner cette cle a la main.
 
+Launcher desktop simple :
+
+```powershell
+.\launch-warcontrol-ui.bat
+```
+
+Le launcher desktop permet de :
+
+- sauvegarder la configuration locale
+- demarrer WarControl
+- arreter WarControl
+- ouvrir le dashboard
+- lancer Minecraft
+
 Pour tout arreter :
 
 ```powershell
